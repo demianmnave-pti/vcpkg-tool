@@ -142,7 +142,9 @@ namespace vcpkg
     std::unique_ptr<RegistryImplementation> make_git_registry(const VcpkgPaths& paths,
                                                               std::string repo,
                                                               std::string reference,
-                                                              std::string baseline);
+                                                              std::string baseline,
+                                                              Path path
+                                                              );
     std::unique_ptr<RegistryImplementation> make_filesystem_registry(const Filesystem& fs,
                                                                      Path path,
                                                                      std::string baseline);

@@ -91,6 +91,7 @@ namespace
             RegistryConfigDeserializer::BASELINE,
             RegistryConfigDeserializer::REPO,
             RegistryConfigDeserializer::REFERENCE,
+            RegistryConfigDeserializer::PATH,
             RegistryDeserializer::PACKAGES,
         };
         return t;
@@ -145,6 +146,8 @@ namespace
             {
                 res.reference = nullopt;
             }
+
+            r.optional_object_field(obj, PATH, res.path.emplace(), Json::PathDeserializer::instance);
 
             r.required_object_field("a git registry", obj, BASELINE, res.baseline.emplace(), baseline_deserializer);
 
@@ -680,7 +683,9 @@ namespace vcpkg
                 return make_git_registry(paths,
                                          config.repo.value_or_exit(VCPKG_LINE_INFO),
                                          config.reference.value_or("HEAD"),
-                                         config.baseline.value_or_exit(VCPKG_LINE_INFO));
+                                         config.baseline.value_or_exit(VCPKG_LINE_INFO),
+                                         config.path.value_or("")
+                                         );
             }
             else if (*k == RegistryConfigDeserializer::KIND_FILESYSTEM)
             {

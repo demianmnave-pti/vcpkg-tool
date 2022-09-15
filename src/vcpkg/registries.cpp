@@ -51,11 +51,12 @@ namespace
 
     struct GitRegistry final : RegistryImplementation
     {
-        GitRegistry(const VcpkgPaths& paths, std::string&& repo, std::string&& reference, std::string&& baseline)
+        GitRegistry(const VcpkgPaths& paths, std::string&& repo, std::string&& reference, std::string&& baseline, Path&& path)
             : m_paths(paths)
             , m_repo(std::move(repo))
             , m_reference(std::move(reference))
             , m_baseline_identifier(std::move(baseline))
+            , m_path(std::move(path))
         {
         }
 
@@ -82,7 +83,7 @@ namespace
                 auto e = get_lock_entry();
                 e.ensure_up_to_date(m_paths);
                 auto maybe_tree = m_paths.git_find_object_id_for_remote_registry_path(
-                    e.commit_id(), registry_versions_dir_name.to_string());
+                    e.commit_id(), m_path / registry_versions_dir_name.to_string());
                 if (!maybe_tree)
                 {
                     LockGuardPtr<Metrics>(g_metrics)->track_define_property(
@@ -122,7 +123,7 @@ namespace
             if (!m_stale_versions_tree.has_value())
             {
                 auto maybe_tree = m_paths.git_find_object_id_for_remote_registry_path(
-                    e.commit_id(), registry_versions_dir_name.to_string());
+                    e.commit_id(), m_path / registry_versions_dir_name.to_string());
                 if (!maybe_tree)
                 {
                     // This could be caused by git gc or otherwise -- fall back to full fetch
@@ -144,6 +145,7 @@ namespace
         std::string m_repo;
         std::string m_reference;
         std::string m_baseline_identifier;
+        Path m_path;
         DelayedInit<LockFile::Entry> m_lock_entry;
         mutable Optional<Path> m_stale_versions_tree;
         DelayedInit<Path> m_versions_tree;
@@ -648,7 +650,7 @@ namespace
                     e.commit_id());
             }
 
-            auto path_to_baseline = Path(registry_versions_dir_name.to_string()) / "baseline.json";
+            auto path_to_baseline = Path(m_path / registry_versions_dir_name.to_string()) / "baseline.json";
             auto maybe_contents = m_paths.git_show_from_remote_registry(m_baseline_identifier, path_to_baseline);
             if (!maybe_contents)
             {
@@ -1234,7 +1236,7 @@ namespace vcpkg
         if (paths.use_git_default_registry())
         {
             return std::make_unique<GitRegistry>(
-                paths, builtin_registry_git_url.to_string(), "HEAD", std::move(baseline));
+                paths, builtin_registry_git_url.to_string(), "HEAD", std::move(baseline), Path());
         }
         else
         {
@@ -1244,9 +1246,10 @@ namespace vcpkg
     std::unique_ptr<RegistryImplementation> make_git_registry(const VcpkgPaths& paths,
                                                               std::string repo,
                                                               std::string reference,
-                                                              std::string baseline)
+                                                              std::string baseline,
+                                                              Path path)
     {
-        return std::make_unique<GitRegistry>(paths, std::move(repo), std::move(reference), std::move(baseline));
+        return std::make_unique<GitRegistry>(paths, std::move(repo), std::move(reference), std::move(baseline), std::move(path));
     }
     std::unique_ptr<RegistryImplementation> make_filesystem_registry(const Filesystem& fs,
                                                                      Path path,
