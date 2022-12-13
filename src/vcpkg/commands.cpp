@@ -1,6 +1,8 @@
 #include <vcpkg/base/system.print.h>
 
 #include <vcpkg/build.h>
+#include <vcpkg/commands.acquire-project.h>
+#include <vcpkg/commands.acquire.h>
 #include <vcpkg/commands.activate.h>
 #include <vcpkg/commands.add-version.h>
 #include <vcpkg/commands.add.h>
@@ -21,6 +23,7 @@
 #include <vcpkg/commands.find.h>
 #include <vcpkg/commands.format-manifest.h>
 #include <vcpkg/commands.generate-message-map.h>
+#include <vcpkg/commands.generate-msbuild-props.h>
 #include <vcpkg/commands.h>
 #include <vcpkg/commands.hash.h>
 #include <vcpkg/commands.info.h>
@@ -84,6 +87,8 @@ namespace vcpkg::Commands
 
     Span<const PackageNameAndFunction<const PathsCommand*>> get_available_paths_commands()
     {
+        static const AcquireCommand acquire{};
+        static const AcquireProjectCommand acquire_project{};
         static const ActivateCommand activate{};
         static const AddCommand add{};
         static const AddVersion::AddVersionCommand add_version{};
@@ -97,6 +102,7 @@ namespace vcpkg::Commands
         static const Fetch::FetchCommand fetch{};
         static const FindCommand find_{};
         static const FormatManifest::FormatManifestCommand format_manifest{};
+        static const GenerateMSBuildPropsCommand generate_msbuildprops{};
         static const Help::HelpCommand help{};
         static const Info::InfoCommand info{};
         static const Integrate::IntegrateCommand integrate{};
@@ -115,6 +121,8 @@ namespace vcpkg::Commands
         static std::vector<PackageNameAndFunction<const PathsCommand*>> t = {
             {"/?", &help},
             {"help", &help},
+            {"acquire", &acquire},
+            {"acquire-project", &acquire_project},
             {"activate", &activate},
             {"add", &add},
             {"autocomplete", &autocomplete},
@@ -134,6 +142,7 @@ namespace vcpkg::Commands
             {"update", &update},
             {"x-update-baseline", &update_baseline},
             {"use", &use},
+            {"x-generate-msbuild-props", &generate_msbuildprops},
             {"x-add-version", &add_version},
             {"x-ci-clean", &ciclean},
             {"x-ci-verify-versions", &ci_verify_versions},

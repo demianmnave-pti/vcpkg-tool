@@ -1,5 +1,6 @@
 #include <vcpkg/base/system_headers.h>
 
+#include <vcpkg/base/chrono.h>
 #include <vcpkg/base/files.h>
 #include <vcpkg/base/messages.h>
 #include <vcpkg/base/span.h>
@@ -68,15 +69,6 @@ namespace
     }
 #endif
 
-    [[noreturn]] void exit_filesystem_call_error(LineInfo li,
-                                                 const std::error_code& ec,
-                                                 StringView call_name,
-                                                 std::initializer_list<StringView> args)
-    {
-        auto arguments = args.size() == 0 ? "()" : "(\"" + Strings::join("\", \"", args.begin(), args.end()) + "\")";
-        Checks::exit_with_message_and_line(li, Strings::concat(call_name, arguments, ": ", ec.message()));
-    }
-
 #if defined(_WIN32)
     FileType convert_file_type(stdfs::file_type type) noexcept
     {
@@ -109,7 +101,7 @@ namespace
     template<class Ty>
     Ty unaligned_load(const void* pv) noexcept
     {
-        static_assert(std::is_trivial<Ty>::value, "Unaligned loads require trivial types");
+        static_assert(std::is_trivial_v<Ty>, "Unaligned loads require trivial types");
         Ty tmp;
         memcpy(&tmp, pv, sizeof(tmp));
         return tmp;
@@ -517,7 +509,7 @@ namespace
             }
         }
 
-        ec = std::move(err.ec);
+        ec = err.ec;
         failure_point = std::move(err.failure_point);
     }
 
@@ -920,6 +912,8 @@ namespace
         }
     }
 #endif // ^^^ !_WIN32
+
+    constexpr char preferred_separator = VCPKG_PREFERRED_SEPARATOR[0];
 } // unnamed namespace
 
 #if defined(_WIN32)
@@ -959,6 +953,43 @@ namespace
 
 namespace vcpkg
 {
+    LocalizedString format_filesystem_call_error(const std::error_code& ec,
+                                                 StringView call_name,
+                                                 std::initializer_list<StringView> args)
+    {
+        auto arguments = args.size() == 0 ? "()" : "(\"" + Strings::join("\", \"", args.begin(), args.end()) + "\")";
+        return LocalizedString::from_raw(Strings::concat(call_name, arguments, ": ", ec.message()));
+    }
+
+    [[noreturn]] void exit_filesystem_call_error(LineInfo li,
+                                                 const std::error_code& ec,
+                                                 StringView call_name,
+                                                 std::initializer_list<StringView> args)
+    {
+        Checks::msg_exit_with_message(li, format_filesystem_call_error(ec, call_name, args));
+    }
+
+    IgnoreErrors::operator std::error_code&() { return ec; }
+
+    Path::Path() = default;
+    Path::Path(const Path&) = default;
+    Path::Path(Path&&) = default;
+    Path& Path::operator=(const Path&) = default;
+    Path& Path::operator=(Path&&) = default;
+
+    Path::Path(const StringView sv) : m_str(sv.to_string()) { }
+    Path::Path(const std::string& s) : m_str(s) { }
+    Path::Path(std::string&& s) : m_str(std::move(s)) { }
+    Path::Path(const char* s) : m_str(s) { }
+
+    Path::Path(const char* first, size_t size) : m_str(first, size) { }
+
+    const std::string& Path::native() const& noexcept { return m_str; }
+    std::string&& Path::native() && noexcept { return std::move(m_str); }
+    Path::operator StringView() const noexcept { return m_str; }
+
+    const char* Path::c_str() const noexcept { return m_str.c_str(); }
+
     std::string Path::generic_u8string() const
     {
 #if defined(_WIN32)
@@ -969,6 +1000,8 @@ namespace vcpkg
         return m_str;
 #endif
     }
+
+    bool Path::empty() const noexcept { return m_str.empty(); }
 
     Path Path::operator/(StringView sv) const&
     {
@@ -1107,12 +1140,14 @@ namespace vcpkg
         m_str.erase(m_str.begin() + (filename - first), m_str.end());
     }
 
+    void Path::clear() { m_str.clear(); }
+
     // It is not clear if this is intended to collapse multiple slashes, see
     // https://github.com/microsoft/STL/issues/2082
     // This implementation does collapse slashes because we primarily use it for shiny display purposes.
     void Path::make_preferred()
     {
-        char* first = &m_str[0];
+        char* first = m_str.data();
         char* last = first + m_str.size();
         char* after_root_name = const_cast<char*>(find_root_name_end(first, last));
         char* after_root_directory = std::find_if_not(after_root_name, last, is_slash);
@@ -1310,7 +1345,75 @@ namespace vcpkg
 
     bool Path::is_absolute() const { return is_absolute_path(m_str); }
 
-    ReadFilePointer::ReadFilePointer(const Path& file_path, std::error_code& ec) noexcept
+    bool Path::is_relative() const { return !is_absolute(); }
+
+    const char* to_printf_arg(const Path& p) noexcept { return p.m_str.c_str(); }
+
+    bool is_symlink(FileType s) { return s == FileType::symlink || s == FileType::junction; }
+    bool is_regular_file(FileType s) { return s == FileType::regular; }
+    bool is_directory(FileType s) { return s == FileType::directory; }
+    bool exists(FileType s) { return s != FileType::not_found && s != FileType::none; }
+
+    FilePointer::FilePointer(const Path& path) : m_fs(nullptr), m_path(path) { }
+    FilePointer::FilePointer() noexcept : m_fs(nullptr), m_path{} { }
+
+    FilePointer::FilePointer(FilePointer&& other) noexcept : m_fs(other.m_fs), m_path(std ::move(other.m_path))
+    {
+        other.m_fs = nullptr;
+        other.m_path = {};
+    }
+
+    FilePointer::operator bool() const noexcept { return m_fs != nullptr; }
+
+    int FilePointer::seek(long long offset, int origin) const noexcept
+    {
+#if defined(_WIN32)
+        return ::_fseeki64(m_fs, offset, origin);
+#else  // ^^^ _WIN32 / !_WIN32 vvv
+        return ::fseeko(m_fs, offset, origin);
+#endif // ^^^ !_WIN32
+    }
+
+    long long FilePointer::tell() const noexcept
+    {
+#if defined(_WIN32)
+        return ::_ftelli64(m_fs);
+#else  // ^^^ _WIN32 / !_WIN32 vvv
+        return ::ftello(m_fs);
+#endif // ^^^ !_WIN32
+    }
+
+    int FilePointer::eof() const noexcept { return ::feof(m_fs); }
+    std::error_code FilePointer::error() const noexcept
+    {
+        return std::error_code(::ferror(m_fs), std::generic_category());
+    }
+
+    const Path& FilePointer::path() const { return m_path; }
+
+    ExpectedL<Unit> FilePointer::try_seek_to(long long offset)
+    {
+        if (this->seek(offset, SEEK_SET))
+        {
+            return msg::format(msgFileSeekFailed, msg::path = m_path, msg::byte_offset = offset);
+        }
+
+        return Unit{};
+    }
+
+    FilePointer::~FilePointer()
+    {
+        if (m_fs)
+        {
+            Checks::check_exit(VCPKG_LINE_INFO, ::fclose(m_fs) == 0);
+        }
+    }
+
+    ReadFilePointer::ReadFilePointer() noexcept = default;
+
+    ReadFilePointer::ReadFilePointer(ReadFilePointer&&) noexcept = default;
+
+    ReadFilePointer::ReadFilePointer(const Path& file_path, std::error_code& ec) : FilePointer(file_path)
     {
 #if defined(_WIN32)
         ec.assign(::_wfopen_s(&m_fs, to_stdfs_path(file_path).c_str(), L"rb"), std::generic_category());
@@ -1327,7 +1430,46 @@ namespace vcpkg
 #endif // ^^^ !_WIN32
     }
 
-    WriteFilePointer::WriteFilePointer(const Path& file_path, std::error_code& ec) noexcept
+    ReadFilePointer& ReadFilePointer::operator=(ReadFilePointer&& other) noexcept
+    {
+        ReadFilePointer fp{std::move(other)};
+        std::swap(m_fs, fp.m_fs);
+        return *this;
+    }
+
+    size_t ReadFilePointer::read(void* buffer, size_t element_size, size_t element_count) const noexcept
+    {
+        return ::fread(buffer, element_size, element_count, m_fs);
+    }
+
+    ExpectedL<Unit> ReadFilePointer::try_read_all(void* buffer, std::uint32_t size)
+    {
+        const auto result = this->read(buffer, 1, size);
+        if (result != size)
+        {
+            return msg::format(
+                msgFileReadFailed, msg::path = m_path, msg::byte_offset = this->tell(), msg::count = size);
+        }
+
+        return Unit{};
+    }
+
+    ExpectedL<char> ReadFilePointer::try_getc()
+    {
+        auto result = ::fgetc(m_fs);
+        if (result == EOF)
+        {
+            return msg::format(msgFileReadFailed, msg::path = m_path, msg::byte_offset = this->tell(), msg::count = 1);
+        }
+
+        return static_cast<char>(result);
+    }
+
+    WriteFilePointer::WriteFilePointer() noexcept = default;
+
+    WriteFilePointer::WriteFilePointer(WriteFilePointer&&) noexcept = default;
+
+    WriteFilePointer::WriteFilePointer(const Path& file_path, std::error_code& ec) : FilePointer(file_path)
     {
 #if defined(_WIN32)
         m_fs = ::_wfsopen(to_stdfs_path(file_path).c_str(), L"wb", _SH_DENYWR);
@@ -1345,6 +1487,20 @@ namespace vcpkg
         }
 #endif // ^^^ !_WIN32
     }
+
+    WriteFilePointer& WriteFilePointer::operator=(WriteFilePointer&& other) noexcept
+    {
+        WriteFilePointer fp{std::move(other)};
+        std::swap(m_fs, fp.m_fs);
+        return *this;
+    }
+
+    size_t WriteFilePointer::write(const void* buffer, size_t element_size, size_t element_count) const noexcept
+    {
+        return ::fwrite(buffer, element_size, element_count, m_fs);
+    }
+
+    int WriteFilePointer::put(int c) const noexcept { return ::fputc(c, m_fs); }
 
     std::vector<std::string> Filesystem::read_lines(const Path& file_path, LineInfo li) const
     {
@@ -1585,6 +1741,18 @@ namespace vcpkg
         if (ec)
         {
             exit_filesystem_call_error(li, ec, __func__, {new_directory});
+        }
+
+        return result;
+    }
+
+    Path Filesystem::create_or_get_temp_directory(LineInfo li)
+    {
+        std::error_code ec;
+        Path result = this->create_or_get_temp_directory(ec);
+        if (ec)
+        {
+            exit_filesystem_call_error(li, ec, __func__, {});
         }
 
         return result;
@@ -1857,6 +2025,18 @@ namespace vcpkg
         }
 
         return ret;
+    }
+
+    ExpectedL<ReadFilePointer> Filesystem::try_open_for_read(const Path& file_path) const
+    {
+        std::error_code ec;
+        auto ret = this->open_for_read(file_path, ec);
+        if (ec)
+        {
+            return format_filesystem_call_error(ec, __func__, {file_path});
+        }
+
+        return ExpectedL<ReadFilePointer>{std::move(ret)};
     }
 
     WriteFilePointer Filesystem::open_for_write(const Path& file_path, LineInfo li)
@@ -2351,8 +2531,7 @@ namespace vcpkg
         virtual std::vector<Path> get_files_recursive(const Path& dir, std::error_code& ec) const override
         {
             std::vector<Path> result;
-            Path out_base = dir;
-            get_files_recursive_impl(result, dir, out_base, ec, true, true, true);
+            get_files_recursive_impl(result, dir, dir, ec, true, true, true);
             return result;
         }
 
@@ -2366,8 +2545,7 @@ namespace vcpkg
         virtual std::vector<Path> get_directories_recursive(const Path& dir, std::error_code& ec) const override
         {
             std::vector<Path> result;
-            Path out_base = dir;
-            get_files_recursive_impl(result, dir, out_base, ec, true, false, false);
+            get_files_recursive_impl(result, dir, dir, ec, true, false, false);
 
             return result;
         }
@@ -2396,8 +2574,7 @@ namespace vcpkg
         virtual std::vector<Path> get_regular_files_recursive(const Path& dir, std::error_code& ec) const override
         {
             std::vector<Path> result;
-            Path out_base = dir;
-            get_files_recursive_impl(result, dir, out_base, ec, false, true, false);
+            get_files_recursive_impl(result, dir, dir, ec, false, true, false);
             return result;
         }
 
@@ -2695,6 +2872,20 @@ namespace vcpkg
             }
 
 #endif // _WIN32
+        }
+
+        virtual Path create_or_get_temp_directory(std::error_code& ec) override
+        {
+#if defined(_WIN32)
+            wchar_t temp_folder[MAX_PATH + 1];
+            DWORD length_without_null = GetTempPathW(MAX_PATH + 1, temp_folder);
+            Path temp_folder_path = Path(Strings::to_utf8(temp_folder, length_without_null)) / "vcpkg";
+#else  // ^^^ _WIN32 // !_WIN32 vvv
+            const Path temp_folder_path = "/tmp/vcpkg";
+#endif // ^^^ !_WIN32
+
+            this->create_directories(temp_folder_path, ec);
+            return temp_folder_path;
         }
 
 #if !defined(_WIN32)
@@ -3303,7 +3494,7 @@ namespace vcpkg
 #endif // ^^^!_WIN32
 
                 static const std::vector<Path> path_bases = calculate_path_bases();
-                for (Path path_base : path_bases)
+                for (const Path& path_base : path_bases)
                 {
                     for (auto&& stem : stems)
                     {
@@ -3342,9 +3533,12 @@ namespace vcpkg
         return real_fs;
     }
 
+    constexpr StringLiteral FILESYSTEM_INVALID_CHARACTERS = R"(\/:*?"<>|)";
+
     bool has_invalid_chars_for_filesystem(const std::string& s)
     {
-        return s.find_first_of(R"([/\:*"<>|])") != std::string::npos;
+        return s.find_first_of(FILESYSTEM_INVALID_CHARACTERS.data(), 0, FILESYSTEM_INVALID_CHARACTERS.size()) !=
+               std::string::npos;
     }
 
     void print_paths(const std::vector<Path>& paths)
@@ -3357,6 +3551,8 @@ namespace vcpkg
         message.push_back('\n');
         msg::write_unlocalized_text_to_stdout(Color::none, message);
     }
+
+    IExclusiveFileLock::~IExclusiveFileLock() = default;
 
     uint64_t get_filesystem_stats() { return g_us_filesystem_stats.load(); }
 
@@ -3462,4 +3658,17 @@ namespace vcpkg
     }
 #endif // _WIN32
 
+    bool NotExtensionCaseSensitive::operator()(const Path& target) const { return target.extension() != ext; }
+
+    bool NotExtensionCaseInsensitive::operator()(const Path& target) const
+    {
+        return !Strings::case_insensitive_ascii_equals(target.extension(), ext);
+    }
+
+    bool NotExtensionsCaseInsensitive::operator()(const Path& target) const
+    {
+        return !std::any_of(exts.begin(), exts.end(), [extension = target.extension()](const auto& ext) {
+            return Strings::case_insensitive_ascii_equals(extension, ext);
+        });
+    }
 }

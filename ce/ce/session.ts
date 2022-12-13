@@ -2,8 +2,9 @@
 // Licensed under the MIT License.
 
 import { strict } from 'assert';
+import { createHash } from 'crypto';
 import { MetadataFile } from './amf/metadata-file';
-import { Activation, deactivate } from './artifacts/activation';
+import { deactivate } from './artifacts/activation';
 import { Artifact, InstalledArtifact } from './artifacts/artifact';
 import { configurationName, defaultConfig, globalConfigurationFile, postscriptVariable, undo } from './constants';
 import { FileSystem } from './fs/filesystem';
@@ -50,11 +51,26 @@ export type Context = { [key: string]: Array<string> | undefined; } & {
 
 export type SessionSettings = {
   readonly vcpkgCommand?: string;
-  readonly homeFolder?: string;
+  readonly homeFolder: string;
   readonly vcpkgArtifactsRoot?: string;
   readonly vcpkgDownloads?: string;
   readonly vcpkgRegistriesCache?: string;
-  readonly telemetryEnabled: boolean;
+  readonly telemetryFile?: string;
+}
+
+interface AcquiredArtifactEntry {
+  registryUri: string;
+  id: string;
+  version: string;
+}
+
+function hexsha(content: string) {
+  return createHash('sha256').update(content, 'ascii').digest('hex');
+}
+
+function formatAcquiredArtifactEntry(entry: AcquiredArtifactEntry): string {
+  // we hash all the things to remove PII
+  return `${hexsha(entry.registryUri)}:${hexsha(entry.id)}:${hexsha(entry.version)}`;
 }
 
 /**
@@ -73,14 +89,14 @@ export class Session {
   readonly tmpFolder: Uri;
   readonly installFolder: Uri;
   readonly registryFolder: Uri;
-  readonly activation: Activation = new Activation(this);
+  readonly telemetryFile: Uri | undefined;
   get vcpkgCommand() { return this.settings.vcpkgCommand; }
 
   readonly globalConfig: Uri;
   readonly downloads: Uri;
-  readonly telemetryEnabled: boolean;
   currentDirectory: Uri;
-  configuration!: MetadataFile;
+  configuration?: MetadataFile;
+  readonly postscriptFile?: Uri;
 
   /** register installer functions here */
   private installers = new Map<string, InstallerTool>([
@@ -106,9 +122,11 @@ export class Session {
 
     this.channels = new Channels(this);
 
-    this.telemetryEnabled = this.settings['telemetryEnabled'];
+    if (settings.telemetryFile) {
+      this.telemetryFile = this.fileSystem.file(settings.telemetryFile);
+    }
 
-    this.homeFolder = this.fileSystem.file(settings.homeFolder!);
+    this.homeFolder = this.fileSystem.file(settings.homeFolder);
     this.downloads = this.processVcpkgArg(settings.vcpkgDownloads, 'downloads');
     this.globalConfig = this.homeFolder.join(globalConfigurationFile);
 
@@ -116,6 +134,9 @@ export class Session {
 
     this.registryFolder = this.processVcpkgArg(settings.vcpkgRegistriesCache, 'registries').join('artifact');
     this.installFolder = this.processVcpkgArg(settings.vcpkgArtifactsRoot, 'artifacts');
+
+    const postscriptFileName = this.environment[postscriptVariable];
+    this.postscriptFile = postscriptFileName ? this.fileSystem.file(postscriptFileName) : undefined;
 
     this.currentDirectory = this.fileSystem.file(currentDirectory);
   }
@@ -131,12 +152,7 @@ export class Session {
   }
 
   async saveConfig() {
-    await this.configuration.save(this.globalConfig);
-  }
-
-  #postscriptFile?: Uri;
-  get postscriptFile() {
-    return this.#postscriptFile || (this.#postscriptFile = this.environment[postscriptVariable] ? this.fileSystem.file(this.environment[postscriptVariable]!) : undefined);
+    await this.configuration?.save(this.globalConfig);
   }
 
   async init() {
@@ -256,5 +272,25 @@ export class Session {
       }
     }
     return value;
+  }
+
+  readonly #acquiredArtifacts: Array<AcquiredArtifactEntry> = [];
+
+  trackAcquire(registryUri: string, id: string, version: string) {
+    this.#acquiredArtifacts.push({registryUri: registryUri, id: id, version: version});
+  }
+
+  writeTelemetry(): Promise<any> {
+    if (this.#acquiredArtifacts.length !== 0) {
+      const acquiredArtifacts = this.#acquiredArtifacts.map(formatAcquiredArtifactEntry).join(',');
+      const telemetryFile = this.telemetryFile;
+      if (telemetryFile) {
+        return telemetryFile.writeUTF8(JSON.stringify({
+          'acquired_artifacts': acquiredArtifacts
+        }));
+      }
+    }
+
+    return Promise.resolve(undefined);
   }
 }

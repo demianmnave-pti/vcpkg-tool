@@ -2,6 +2,7 @@
 #include <vcpkg/base/system.print.h>
 
 #include <vcpkg/configuration.h>
+#include <vcpkg/documentation.h>
 #include <vcpkg/metrics.h>
 #include <vcpkg/vcpkgcmdarguments.h>
 #include <vcpkg/vcpkgpaths.h>
@@ -199,13 +200,14 @@ namespace
 
         if (auto config = impl.get())
         {
-            static Json::ArrayDeserializer<Json::PackageNameDeserializer> package_names_deserializer{
-                "an array of package names"};
+            static Json::ArrayDeserializer<Json::PackagePatternDeserializer> package_names_deserializer{
+                "an array of package patterns"};
 
             if (config->kind && *config->kind.get() != RegistryConfigDeserializer::KIND_ARTIFACT)
             {
-                r.required_object_field(
-                    type_name(), obj, PACKAGES, config->packages.emplace(), package_names_deserializer);
+                auto& declarations = config->package_declarations.emplace();
+                r.required_object_field(type_name(), obj, PACKAGES, declarations, package_names_deserializer);
+                config->packages.emplace(Util::fmap(declarations, [](auto&& decl) { return decl.pattern; }));
             }
         }
         return impl;
@@ -263,6 +265,8 @@ namespace
 
         constexpr static StringLiteral DEFAULT_REGISTRY = "default-registry";
         constexpr static StringLiteral REGISTRIES = "registries";
+        constexpr static StringLiteral OVERLAY_PORTS = "overlay-ports";
+        constexpr static StringLiteral OVERLAY_TRIPLETS = "overlay-triplets";
 
         virtual Optional<Configuration> visit_object(Json::Reader& r, const Json::Object& obj) override;
 
@@ -271,6 +275,8 @@ namespace
     ConfigurationDeserializer ConfigurationDeserializer::instance;
     constexpr StringLiteral ConfigurationDeserializer::DEFAULT_REGISTRY;
     constexpr StringLiteral ConfigurationDeserializer::REGISTRIES;
+    constexpr StringLiteral ConfigurationDeserializer::OVERLAY_PORTS;
+    constexpr StringLiteral ConfigurationDeserializer::OVERLAY_TRIPLETS;
 
     Optional<Json::Object> DictionaryDeserializer::visit_object(Json::Reader& r, const Json::Object& obj)
     {
@@ -379,6 +385,82 @@ namespace
         return ret;
     }
 
+    LocalizedString& append_declaration_warning(LocalizedString& msg,
+                                                StringView location,
+                                                StringView registry,
+                                                size_t indent_level)
+    {
+        return msg.append_indent(indent_level)
+            .append(msgDuplicatePackagePatternLocation, msg::path = location)
+            .append_raw("\n")
+            .append_indent(indent_level)
+            .append(msgDuplicatePackagePatternRegistry, msg::url = registry)
+            .append_raw("\n");
+    }
+
+    std::vector<LocalizedString> collect_package_pattern_warnings(const std::vector<RegistryConfig>& registries)
+    {
+        struct LocationAndRegistry
+        {
+            StringView location;
+            StringView registry;
+
+            LocationAndRegistry() = default;
+        };
+
+        // handle warnings from package pattern declarations
+        std::map<std::string, std::vector<LocationAndRegistry>> patterns;
+        for (auto&& reg : registries)
+        {
+            if (auto packages = reg.package_declarations.get())
+            {
+                for (auto&& pkg : *packages)
+                {
+                    auto it = patterns.find(pkg.pattern);
+                    if (it == patterns.end())
+                    {
+                        it = patterns.emplace(pkg.pattern, std::vector<LocationAndRegistry>{}).first;
+                    }
+                    it->second.emplace_back(LocationAndRegistry{
+                        pkg.location,
+                        reg.pretty_location(),
+                    });
+                }
+            }
+        }
+
+        std::vector<LocalizedString> warnings;
+        for (auto&& key_value_pair : patterns)
+        {
+            const auto& pattern = key_value_pair.first;
+            const auto& locations = key_value_pair.second;
+            if (locations.size() > 1)
+            {
+                auto first = locations.begin();
+                const auto last = locations.end();
+                auto warning = msg::format_warning(msgDuplicatePackagePattern, msg::package_name = pattern)
+                                   .append_raw("\n")
+                                   .append_indent()
+                                   .append(msgDuplicatePackagePatternFirstOcurrence)
+                                   .append_raw("\n");
+                append_declaration_warning(warning, first->location, first->registry, 2)
+                    .append_raw("\n")
+                    .append_indent()
+                    .append(msgDuplicatePackagePatternIgnoredLocations)
+                    .append_raw("\n");
+                ++first;
+                append_declaration_warning(warning, first->location, first->registry, 2);
+                while (++first != last)
+                {
+                    warning.append_raw("\n");
+                    append_declaration_warning(warning, first->location, first->registry, 2);
+                }
+                warnings.emplace_back(warning);
+            }
+        }
+        return warnings;
+    }
+
     Optional<Configuration> ConfigurationDeserializer::visit_object(Json::Reader& r, const Json::Object& obj)
     {
         Configuration ret;
@@ -393,6 +475,14 @@ namespace
                 comment_keys.emplace_back(el.first);
             }
         }
+
+        static Json::ArrayDeserializer<Json::StringDeserializer> op_des("an array of overlay ports paths",
+                                                                        Json::StringDeserializer{"an overlay path"});
+        r.optional_object_field(obj, OVERLAY_PORTS, ret.overlay_ports, op_des);
+
+        static Json::ArrayDeserializer<Json::StringDeserializer> ot_des("an array of overlay triplets paths",
+                                                                        Json::StringDeserializer{"a triplet path"});
+        r.optional_object_field(obj, OVERLAY_TRIPLETS, ret.overlay_triplets, ot_des);
 
         RegistryConfig default_registry;
         if (r.optional_object_field(obj, DEFAULT_REGISTRY, default_registry, RegistryConfigDeserializer::instance))
@@ -410,6 +500,11 @@ namespace
 
         static Json::ArrayDeserializer<RegistryDeserializer> regs_des("an array of registries");
         r.optional_object_field(obj, REGISTRIES, ret.registries, regs_des);
+
+        for (auto&& warning : collect_package_pattern_warnings(ret.registries))
+        {
+            r.add_warning(type_name(), warning);
+        }
 
         Json::Object& ce_metadata_obj = ret.ce_metadata;
         auto maybe_ce_metadata = r.visit(obj, CeMetadataDeserializer::instance);
@@ -610,6 +705,8 @@ namespace vcpkg
         static constexpr StringView known_fields[]{
             ConfigurationDeserializer::DEFAULT_REGISTRY,
             ConfigurationDeserializer::REGISTRIES,
+            ConfigurationDeserializer::OVERLAY_PORTS,
+            ConfigurationDeserializer::OVERLAY_TRIPLETS,
             CeMetadataDeserializer::CE_MESSAGE,
             CeMetadataDeserializer::CE_WARNING,
             CeMetadataDeserializer::CE_ERROR,
@@ -621,7 +718,7 @@ namespace vcpkg
         return known_fields;
     }
 
-    void Configuration::validate_as_active()
+    void Configuration::validate_as_active() const
     {
         if (!ce_metadata.is_empty())
         {
@@ -667,6 +764,62 @@ namespace vcpkg
     }
 
     Json::IDeserializer<Configuration>& get_configuration_deserializer() { return ConfigurationDeserializer::instance; }
+
+    Optional<Configuration> parse_configuration(StringView contents, StringView origin, MessageSink& messageSink)
+    {
+        if (contents.empty()) return nullopt;
+
+        auto conf = Json::parse(contents, origin);
+        if (!conf)
+        {
+            messageSink.println(msgFailedToParseConfig, msg::path = origin);
+            messageSink.println(Color::error, LocalizedString::from_raw(conf.error()->to_string()));
+            return nullopt;
+        }
+
+        auto conf_value = std::move(conf.value_or_exit(VCPKG_LINE_INFO));
+        if (!conf_value.first.is_object())
+        {
+            messageSink.println(msgFailedToParseNoTopLevelObj, msg::path = origin);
+            return nullopt;
+        }
+
+        return parse_configuration(std::move(conf_value.first.object(VCPKG_LINE_INFO)), origin, messageSink);
+    }
+
+    Optional<Configuration> parse_configuration(const Json::Object& obj, StringView origin, MessageSink& messageSink)
+    {
+        Json::Reader reader;
+        auto maybe_configuration = reader.visit(obj, get_configuration_deserializer());
+        bool has_warnings = !reader.warnings().empty();
+        bool has_errors = !reader.errors().empty();
+        if (has_warnings || has_errors)
+        {
+            if (has_errors)
+            {
+                messageSink.println(Color::error, msgFailedToParseConfig, msg::path = origin);
+            }
+            else
+            {
+                messageSink.println(Color::warning, msgWarnOnParseConfig, msg::path = origin);
+            }
+
+            for (auto&& msg : reader.errors())
+            {
+                messageSink.println(Color::error, LocalizedString().append_indent().append_raw(msg));
+            }
+
+            for (auto&& msg : reader.warnings())
+            {
+                messageSink.println(Color::warning, LocalizedString().append_indent().append(msg));
+            }
+
+            msg::println(msgExtendedDocumentationAtUrl, msg::url = docs::registries_url);
+
+            if (has_errors) return nullopt;
+        }
+        return maybe_configuration;
+    }
 
     static std::unique_ptr<RegistryImplementation> instantiate_rconfig(const VcpkgPaths& paths,
                                                                        const RegistryConfig& config,
@@ -741,6 +894,24 @@ namespace vcpkg
             for (const auto& reg : registries)
             {
                 reg_arr.push_back(reg.serialize());
+            }
+        }
+
+        if (!overlay_ports.empty())
+        {
+            auto& op_arr = obj.insert(ConfigurationDeserializer::OVERLAY_PORTS, Json::Array());
+            for (const auto& port : overlay_ports)
+            {
+                op_arr.push_back(port);
+            }
+        }
+
+        if (!overlay_triplets.empty())
+        {
+            auto& ot_arr = obj.insert(ConfigurationDeserializer::OVERLAY_TRIPLETS, Json::Array());
+            for (const auto& triplet : overlay_triplets)
+            {
+                ot_arr.push_back(triplet);
             }
         }
 

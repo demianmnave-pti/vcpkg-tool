@@ -36,12 +36,12 @@ namespace vcpkg::Commands::CIVerifyVersions
     static constexpr StringLiteral OPTION_VERIFY_GIT_TREES = "verify-git-trees";
 
     static constexpr CommandSwitch VERIFY_VERSIONS_SWITCHES[]{
-        {OPTION_VERBOSE, "Print result for each port instead of just errors."},
-        {OPTION_VERIFY_GIT_TREES, "Verify that each git tree object matches its declared version (this is very slow)"},
+        {OPTION_VERBOSE, []() { return msg::format(msgCISettingsVerifyVersion); }},
+        {OPTION_VERIFY_GIT_TREES, []() { return msg::format(msgCISettingsVerifyGitTree); }},
     };
 
     static constexpr CommandSetting VERIFY_VERSIONS_SETTINGS[] = {
-        {OPTION_EXCLUDE, "Comma-separated list of ports to skip"},
+        {OPTION_EXCLUDE, []() { return msg::format(msgCISettingsExclude); }},
     };
 
     const CommandStructure COMMAND_STRUCTURE{
@@ -116,7 +116,7 @@ namespace vcpkg::Commands::CIVerifyVersions
                     }
 
                     const auto& scf = maybe_scf.value_or_exit(VCPKG_LINE_INFO);
-                    auto&& git_tree_version = scf.get()->to_schemed_version();
+                    auto&& git_tree_version = scf->to_schemed_version();
                     if (version_entry.first.version != git_tree_version.version)
                     {
                         return {
@@ -297,9 +297,10 @@ namespace vcpkg::Commands::CIVerifyVersions
         auto maybe_port_git_tree_map = paths.git_get_local_port_treeish_map();
         if (!maybe_port_git_tree_map)
         {
-            Checks::msg_exit_with_error(
-                VCPKG_LINE_INFO,
-                msg::format(msgFailedToObtainLocalPortGitSha).append_raw("\n" + maybe_port_git_tree_map.error()));
+            Checks::msg_exit_with_error(VCPKG_LINE_INFO,
+                                        msg::format(msgFailedToObtainLocalPortGitSha)
+                                            .append_raw('\n')
+                                            .append_raw(maybe_port_git_tree_map.error()));
         }
 
         auto port_git_tree_map = maybe_port_git_tree_map.value_or_exit(VCPKG_LINE_INFO);
@@ -397,10 +398,10 @@ namespace vcpkg::Commands::CIVerifyVersions
             auto message = msg::format(msgErrorsFound);
             for (auto&& error : errors)
             {
-                message.append_raw("\n").append_indent().append_raw(error);
+                message.append_raw('\n').append_indent().append_raw(error);
             }
 
-            message.append_raw("\n").append(
+            message.append_raw('\n').append(
                 msgSuggestResolution, msg::command_name = "x-add-version", msg::option = "all");
 
             msg::println_error(message);

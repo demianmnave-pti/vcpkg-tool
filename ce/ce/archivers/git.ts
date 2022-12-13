@@ -2,28 +2,21 @@
 // Licensed under the MIT License.
 
 import { UnpackEvents } from '../interfaces/events';
-import { Session } from '../session';
-import { Credentials } from '../util/credentials';
 import { execute } from '../util/exec-cmd';
 import { isFilePath, Uri } from '../util/uri';
 
 export interface CloneOptions {
   force?: boolean;
-  credentials?: Credentials;
 }
 
 /** @internal */
 export class Git {
-  #session: Session;
   #toolPath: string;
   #targetFolder: Uri;
-  #environment: NodeJS.ProcessEnv;
 
-  constructor(session: Session, toolPath: string, environment: NodeJS.ProcessEnv, targetFolder: Uri) {
-    this.#session = session;
+  constructor(toolPath: string, targetFolder: Uri) {
     this.#toolPath = toolPath;
     this.#targetFolder = targetFolder;
-    this.#environment = environment;
   }
 
   /**
@@ -45,7 +38,6 @@ export class Git {
       options.depth ? `--depth=${options.depth}` : '',
       '--progress'
     ], {
-      env: this.#environment,
       onStdErrData: chunkToHeartbeat(events),
       onStdOutData: chunkToHeartbeat(events)
     });
@@ -70,7 +62,6 @@ export class Git {
       options.commit ? options.commit : '',
       options.depth ? `--depth=${options.depth}` : ''
     ], {
-      env: this.#environment,
       cwd: this.#targetFolder.fsPath
     });
 
@@ -92,7 +83,6 @@ export class Git {
       'checkout',
       options.commit ? options.commit : ''
     ], {
-      env: this.#environment,
       cwd: this.#targetFolder.fsPath,
       onStdErrData: chunkToHeartbeat(events),
       onStdOutData: chunkToHeartbeat(events)
@@ -117,7 +107,6 @@ export class Git {
       options.recurse ? '--recurse-submodules' : '',
       options.hard ? '--hard' : ''
     ], {
-      env: this.#environment,
       cwd: this.#targetFolder.fsPath,
       onStdErrData: chunkToHeartbeat(events),
       onStdOutData: chunkToHeartbeat(events)
@@ -140,7 +129,6 @@ export class Git {
     }
 
     const result = await execute(this.#toolPath, ['init'], {
-      env: this.#environment,
       cwd: this.#targetFolder.fsPath
     });
 
@@ -162,7 +150,6 @@ export class Git {
       name,
       location.toString()
     ], {
-      env: this.#environment,
       cwd: this.#targetFolder.fsPath
     });
 
@@ -186,7 +173,6 @@ export class Git {
       options.depth ? `--depth=${options.depth}` : '',
       options.recursive ? '--recursive' : '',
     ], {
-      env: this.#environment,
       cwd: this.#targetFolder.fsPath,
       onStdErrData: chunkToHeartbeat(events),
       onStdOutData: chunkToHeartbeat(events)
@@ -210,7 +196,6 @@ export class Git {
       key,
       value
     ], {
-      env: this.#environment,
       cwd: this.#targetFolder.fsPath
     });
     return result.code === 0;

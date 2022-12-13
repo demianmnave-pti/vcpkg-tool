@@ -5,12 +5,14 @@
 #include <vcpkg/commands.search.h>
 #include <vcpkg/help.h>
 #include <vcpkg/vcpkgcmdarguments.h>
+#include <vcpkg/vcpkgpaths.h>
 
 namespace vcpkg::Commands
 {
     static constexpr StringLiteral OPTION_FULLDESC = "x-full-desc"; // TODO: This should find a better home, eventually
 
-    static constexpr std::array<CommandSwitch, 1> SearchSwitches = {{{OPTION_FULLDESC, "Do not truncate long text"}}};
+    static constexpr std::array<CommandSwitch, 1> SearchSwitches = {
+        {{OPTION_FULLDESC, []() { return msg::format(msgHelpTextOptFullDesc); }}}};
 
     const CommandStructure SearchCommandStructure = {
         Strings::format(
@@ -32,6 +34,6 @@ namespace vcpkg::Commands
             filter = StringView{args.command_arguments[0]};
         }
 
-        perform_find_port_and_exit(paths, full_description, args.json.value_or(false), filter, args.overlay_ports);
+        perform_find_port_and_exit(paths, full_description, args.json.value_or(false), filter, paths.overlay_ports);
     }
 }

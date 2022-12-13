@@ -1,4 +1,3 @@
-#include <vcpkg/base/lockguarded.h>
 #include <vcpkg/base/messages.h>
 #include <vcpkg/base/system.print.h>
 #include <vcpkg/base/util.h>
@@ -29,10 +28,10 @@ namespace vcpkg::Commands::Upgrade
     static constexpr StringLiteral OPTION_ALLOW_UNSUPPORTED_PORT = "allow-unsupported";
 
     static constexpr std::array<CommandSwitch, 4> INSTALL_SWITCHES = {{
-        {OPTION_NO_DRY_RUN, "Actually upgrade"},
-        {OPTION_KEEP_GOING, ""},
-        {OPTION_NO_KEEP_GOING, "Stop installing packages on failure"},
-        {OPTION_ALLOW_UNSUPPORTED_PORT, "Instead of erroring on an unsupported port, continue with a warning."},
+        {OPTION_NO_DRY_RUN, []() { return msg::format(msgCmdUpgradeOptNoDryRun); }},
+        {OPTION_KEEP_GOING, nullptr},
+        {OPTION_NO_KEEP_GOING, []() { return msg::format(msgCmdUpgradeOptNoKeepGoing); }},
+        {OPTION_ALLOW_UNSUPPORTED_PORT, []() { return msg::format(msgCmdUpgradeOptAllowUnsupported); }},
     }};
 
     const CommandStructure COMMAND_STRUCTURE = {
@@ -86,7 +85,10 @@ namespace vcpkg::Commands::Upgrade
         StatusParagraphs status_db = database_load_check(paths.get_filesystem(), paths.installed());
 
         // Load ports from ports dirs
-        PathsPortFileProvider provider(paths, make_overlay_provider(paths, args.overlay_ports));
+        auto& fs = paths.get_filesystem();
+        auto registry_set = paths.make_registry_set();
+        PathsPortFileProvider provider(
+            fs, *registry_set, make_overlay_provider(fs, paths.original_cwd, paths.overlay_ports));
         auto var_provider_storage = CMakeVars::make_triplet_cmake_var_provider(paths);
         auto& var_provider = *var_provider_storage;
 
@@ -218,8 +220,6 @@ namespace vcpkg::Commands::Upgrade
 
         const InstallSummary summary = Install::perform(
             args, action_plan, keep_going, paths, status_db, binary_cache, null_build_logs_recorder(), var_provider);
-
-        msg::println(msgTotalTime, msg::elapsed = GlobalState::timer.to_string());
 
         if (keep_going == KeepGoing::YES)
         {

@@ -24,7 +24,7 @@ vcpkg::ExpectedL<std::string> vcpkg::details::api_stable_format_impl(StringView 
 {
     // Transforms similarly to std::format -- "{xyz}" -> f(xyz), "{{" -> "{", "}}" -> "}"
 
-    static const char s_brackets[] = "{}";
+    static constexpr char s_brackets[] = "{}";
 
     std::string out;
     auto prev = sv.begin();
@@ -156,10 +156,11 @@ void Strings::to_utf8(std::string& output, const wchar_t* w, size_t size_in_char
     if (size <= 0)
     {
         unsigned long last_error = ::GetLastError();
-        Checks::exit_with_message(VCPKG_LINE_INFO,
-                                  "Failed to convert to UTF-8. %08lX %s",
-                                  last_error,
-                                  std::system_category().message(static_cast<int>(last_error)));
+        Checks::msg_exit_with_message(VCPKG_LINE_INFO,
+                                      msg::format(msgUtf8ConversionFailed)
+                                          .append_raw(std::system_category().message(static_cast<int>(last_error)))
+                                          .append_raw('\n')
+                                          .append_raw(std::system_category().message(static_cast<int>(last_error))));
     }
 
     output.resize(size);
@@ -352,26 +353,26 @@ std::vector<StringView> Strings::find_all_enclosed(StringView input, StringView 
 StringView Strings::find_exactly_one_enclosed(StringView input, StringView left_tag, StringView right_tag)
 {
     std::vector<StringView> result = find_all_enclosed(input, left_tag, right_tag);
-    Checks::check_maybe_upgrade(VCPKG_LINE_INFO,
-                                result.size() == 1,
-                                "Found %d sets of %s.*%s but expected exactly 1, in block:\n%s",
-                                result.size(),
-                                left_tag,
-                                right_tag,
-                                input);
+    Checks::msg_check_maybe_upgrade(VCPKG_LINE_INFO,
+                                    result.size() == 1,
+                                    msgExpectedOneSetOfTags,
+                                    msg::count = result.size(),
+                                    msg::old_value = left_tag,
+                                    msg::new_value = right_tag,
+                                    msg::value = input);
     return result.front();
 }
 
 Optional<StringView> Strings::find_at_most_one_enclosed(StringView input, StringView left_tag, StringView right_tag)
 {
     std::vector<StringView> result = find_all_enclosed(input, left_tag, right_tag);
-    Checks::check_maybe_upgrade(VCPKG_LINE_INFO,
-                                result.size() <= 1,
-                                "Found %d sets of %s.*%s but expected at most 1, in block:\n%s",
-                                result.size(),
-                                left_tag,
-                                right_tag,
-                                input);
+    Checks::msg_check_maybe_upgrade(VCPKG_LINE_INFO,
+                                    result.size() <= 1,
+                                    msgExpectedAtMostOneSetOfTags,
+                                    msg::count = result.size(),
+                                    msg::old_value = left_tag,
+                                    msg::new_value = right_tag,
+                                    msg::value = input);
 
     if (result.empty())
     {
@@ -466,6 +467,20 @@ Optional<int> Strings::strto<int>(StringView sv)
 }
 
 template<>
+Optional<unsigned int> Strings::strto<unsigned int>(StringView sv)
+{
+    auto opt = strto<unsigned long>(sv);
+    if (auto p = opt.get())
+    {
+        if (*p <= UINT_MAX)
+        {
+            return static_cast<unsigned int>(*p);
+        }
+    }
+    return nullopt;
+}
+
+template<>
 Optional<long> Strings::strto<long>(StringView sv)
 {
     // disallow initial whitespace
@@ -493,6 +508,33 @@ Optional<long> Strings::strto<long>(StringView sv)
 }
 
 template<>
+Optional<unsigned long> Strings::strto<unsigned long>(StringView sv)
+{
+    // disallow initial whitespace
+    if (sv.empty() || ParserBase::is_whitespace(sv[0]))
+    {
+        return nullopt;
+    }
+
+    auto with_nul_terminator = sv.to_string();
+
+    errno = 0;
+    char* endptr = nullptr;
+    long res = strtoul(with_nul_terminator.c_str(), &endptr, 10);
+    if (endptr != with_nul_terminator.data() + with_nul_terminator.size())
+    {
+        // contains invalid characters
+        return nullopt;
+    }
+    else if (errno == ERANGE)
+    {
+        return nullopt;
+    }
+
+    return res;
+}
+
+template<>
 Optional<long long> Strings::strto<long long>(StringView sv)
 {
     // disallow initial whitespace
@@ -506,6 +548,33 @@ Optional<long long> Strings::strto<long long>(StringView sv)
     errno = 0;
     char* endptr = nullptr;
     long long res = strtoll(with_nul_terminator.c_str(), &endptr, 10);
+    if (endptr != with_nul_terminator.data() + with_nul_terminator.size())
+    {
+        // contains invalid characters
+        return nullopt;
+    }
+    else if (errno == ERANGE)
+    {
+        return nullopt;
+    }
+
+    return res;
+}
+
+template<>
+Optional<unsigned long long> Strings::strto<unsigned long long>(StringView sv)
+{
+    // disallow initial whitespace
+    if (sv.empty() || ParserBase::is_whitespace(sv[0]))
+    {
+        return nullopt;
+    }
+
+    auto with_nul_terminator = sv.to_string();
+
+    errno = 0;
+    char* endptr = nullptr;
+    long long res = strtoull(with_nul_terminator.c_str(), &endptr, 10);
     if (endptr != with_nul_terminator.data() + with_nul_terminator.size())
     {
         // contains invalid characters
